@@ -1,0 +1,94 @@
+            result.error_type = "SAFETY_ERROR"
+            logger.error(f"✗ Query failed safety check: {e}")
+        
+        except DatabaseExecutionError as e:
+            result.error = str(e)
+            result.error_type = "EXECUTION_ERROR"
+            logger.error(f"✗ Query execution error: {e}")
+        
+        except Exception as e:
+            result.error = str(e)
+            result.error_type = type(e).__name__
+            result.error_code = getattr(e, 'code', None)
+            logger.error(f"✗ Query failed: {type(e).__name__}: {e}")
+        
+        finally:
+            result.execution_time_ms = (time.time() - start_time) * 1000
+            self.execution_history.append(result)
+        
+        return result
+    
+    def execute_batch(
+        self,
+        queries: List[str],
+        stop_on_error: bool = False
+    ) -> List[QueryResult]:
+        """Execute multiple queries"""
+        logger.info(f"Executing batch of {len(queries)} queries")
+        
+        results = []
+        for i, query in enumerate(queries, 1):
+            logger.info(f"  [{i}/{len(queries)}]")
+            
+            result = self.execute(query)
+            results.append(result)
+            
+            if stop_on_error and not result.success:
+                logger.warning(f"Stopping batch execution due to error in query {i}")
+                break
+        
+        logger.info(f"✓ Batch execution complete ({len(results)} queries)")
+        return results
+    
+    def _calculate_metrics(self, result: QueryResult, query: str) -> None:
+        """Calculate execution metrics"""
+        query_upper = query.upper()
+        
+        result.metrics.has_join = bool(re.search(r'\bJOIN\b', query_upper))
+        result.metrics.has_subquery = bool(re.search(r'\(SELECT', query_upper))
+        result.metrics.has_aggregation = bool(
+            re.search(r'\b(SUM|COUNT|AVG|MIN|MAX|GROUP_CONCAT)\b', query_upper)
+        )
+        
+        if result.rows:
+            result.metrics.result_rows = len(result.rows)
+            result.metrics.result_size_bytes = sum(
+                len(str(row).encode('utf-8')) for row in result.rows
+            )
+    
+    def get_execution_stats(self) -> Dict[str, Any]:
+        """Get execution statistics"""
+        successful = sum(1 for r in self.execution_history if r.success)
+        failed = len(self.execution_history) - successful
+        
+        execution_times = [
+            r.execution_time_ms for r in self.execution_history if r.success
+        ]
+        
+        stats = {
+            'total_queries': self.execution_count,
+            'successful_queries': successful,
+            'failed_queries': failed,
+            'success_rate': successful / self.execution_count if self.execution_count > 0 else 0,
+            'avg_execution_time_ms': sum(execution_times) / len(execution_times) if execution_times else 0,
+            'min_execution_time_ms': min(execution_times) if execution_times else 0,
+            'max_execution_time_ms': max(execution_times) if execution_times else 0,
+            'total_rows_returned': sum(r.row_count for r in self.execution_history),
+        }
+        
+        return stats
+    
+    def get_error_summary(self) -> Dict[str, int]:
+        """Get summary of errors"""
+        errors = {}
+        
+        for result in self.execution_history:
+            if not result.success and result.error_type:
+                errors[result.error_type] = errors.get(result.error_type, 0) + 1
+        
+        return errors
+    
+    def clear_history(self) -> None:
+        """Clear execution history"""
+        self.execution_history.clear()
+        logger.debug("Cleared execution history")
