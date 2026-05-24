@@ -74,6 +74,9 @@ b-daab/
 ## Publishing to GitHub
 
 ```bash
+git config --global user.name "twistedninja02"
+git config --global user.email "anuj.eee.00724105131179@aust.edu"
+
 git init
 git add .
 git commit -m "Initial commit"
