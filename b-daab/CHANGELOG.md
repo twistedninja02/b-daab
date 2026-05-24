@@ -18,6 +18,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `agent/prompt.py` — Prompt templates (Basic, Detailed, Chain-of-Thought, Few-Shot) and few-shot library
 - `eval/metrics.py` — Query and aggregate metrics, SQL normalization, result comparison, error classification
 - `eval/runner.py` — Full evaluation pipeline with JSON, CSV, and leaderboard output
+- `docs/add_new_tasks.md` — Step-by-step guide for writing, annotating, and validating new benchmark tasks
 - `docs/error_taxonomy.md` — Full reference for all 23 error categories with definitions, SQL examples, and fix guidance
 - `docs/query_examples.md` — Annotated walkthroughs of 6 representative benchmark queries with linguistic analysis, SQL reasoning, and failure patterns
 - `scripts/run_baseline.sh` — One-command script to reproduce all baseline results across mock, Anthropic, and OpenAI providers
