@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "language": "bengali",
+    "total_tasks": 5,
+    "domains": ["healthcare", "education"],
+    "created_date": "2024-05-19"
+  },
+  "tasks": [
+    {
+      "id": "q001",
+      "query_bengali": "সকল হাসপাতালের তালিকা দেখান",
+      "query_english_gloss": "Show all hospitals",
+      "category": "bengali_standard",
+      "difficulty": "easy",
+      "domain": "healthcare",
+      "dialect": "standard",
+      "sql_ground_truth": "SELECT * FROM hospitals;",
+      "expected_result": [
+        {"id": 1, "name": "Dhaka Medical Hospital", "city": "Dhaka"},
+        {"id": 2, "name": "Sylhet MAG Ospeital", "city": "Sylhet"},
+        {"id": 3, "name": "Chittagong Hospital", "city": "Chittagong"},
+        {"id": 4, "name": "Khulna General Hospital", "city": "Khulna"},
+        {"id": 5, "name": "Rajshahi Medical Center", "city": "Rajshahi"}
+      ]
+    },
+    {
+      "id": "q002",
+      "query_bengali": "কত জন রোগী হাসপাতালে আছেন",
+      "query_english_gloss": "How many patients are in the hospital",
+      "category": "bengali_standard",
+      "difficulty": "medium",
+      "domain": "healthcare",
+      "dialect": "standard",
+      "sql_ground_truth": "SELECT COUNT(*) as patient_count FROM patients;",
+      "expected_result": [
+        {"patient_count": 10}
+      ]
+    },
+    {
+      "id": "q003",
+      "query_bengali": "প্রতিটি হাসপাতালে কত জন রোগী আছেন",
+      "query_english_gloss": "How many patients in each hospital",
+      "category": "bengali_standard",
+      "difficulty": "medium",
+      "domain": "healthcare",
+      "dialect": "standard",
+      "sql_ground_truth": "SELECT h.name, COUNT(p.id) as patient_count FROM hospitals h LEFT JOIN patients p ON h.id = p.hospital_id GROUP BY h.id, h.name ORDER BY h.name;",
+      "expected_result": [
+        {"name": "Chittagong Hospital", "patient_count": 2},
+        {"name": "Dhaka Medical Hospital", "patient_count": 3},
+        {"name": "Khulna General Hospital", "patient_count": 0},
+        {"name": "Rajshahi Medical Center", "patient_count": 2},
+        {"name": "Sylhet MAG Ospeital", "patient_count": 3}
+      ]
+    },
+    {
+      "id": "q004",
+      "query_bengali": "সব স্কুলের তালিকা দেখান",
+      "query_english_gloss": "Show all schools",
+      "category": "bengali_standard",
+      "difficulty": "easy",
+      "domain": "education",
+      "dialect": "standard",
+      "sql_ground_truth": "SELECT * FROM schools;",
+      "expected_result": [
+        {"id": 1, "name": "Dhaka School", "city": "Dhaka"},
+        {"id": 2, "name": "Sylhet School", "city": "Sylhet"},
+        {"id": 3, "name": "Chittagong School", "city": "Chittagong"},
+        {"id": 4, "name": "Khulna School", "city": "Khulna"},
+        {"id": 5, "name": "Rajshahi School", "city": "Rajshahi"}
+      ]
+    },
+    {
+      "id": "q005",
+      "query_bengali": "ঢাকায় কতটি স্কুল আছে",
+      "query_english_gloss": "How many schools in Dhaka",
+      "category": "bengali_standard",
+      "difficulty": "medium",
+      "domain": "education",
+      "dialect": "standard",
+      "sql_ground_truth": "SELECT COUNT(*) as school_count FROM schools WHERE city = 'Dhaka';",
+      "expected_result": [
+        {"school_count": 1}
+      ]
+    }
+  ]
+}

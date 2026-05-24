@@ -1,0 +1,387 @@
+"""
+B-DAAB Evaluation Runner
+Orchestrates evaluation of SQL generation models
+"""
+
+import json
+import logging
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+import csv
+
+from eval_metrics import (
+    QueryMetrics, AggregateMetrics, MetricsCalculator,
+    ErrorClassifier, MetricsAggregator, ErrorCategory
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LeaderboardEntry:
+    """Entry in the leaderboard"""
+    rank: int = 0
+    model_name: str = ""
+    model_version: str = ""
+    team_name: str = ""
+    evaluation_date: str = ""
+    
+    total_queries: int = 0
+    correct_queries: int = 0
+    
+    accuracy: float = 0.0
+    exact_match_accuracy: float = 0.0
+    normalized_match_accuracy: float = 0.0
+    execution_accuracy: float = 0.0
+    result_accuracy: float = 0.0
+    
+    avg_generation_time_ms: float = 0.0
+    avg_execution_time_ms: float = 0.0
+    avg_confidence: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+
+class EvaluationRunner:
+    """Runs complete evaluation pipeline"""
+    
+    def __init__(
+        self,
+        output_dir: str = "evaluation_results",
+        model_name: str = "test_model",
+        model_version: str = "1.0.0",
+        team_name: str = "anonymous"
+    ):
+        """Initialize evaluation runner"""
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.model_name = model_name
+        self.model_version = model_version
+        self.team_name = team_name
+        
+        self.query_metrics: List[QueryMetrics] = []
+        self.aggregate_metrics: Optional[AggregateMetrics] = None
+        
+        logger.info(f"Initialized EvaluationRunner for {model_name} v{model_version}")
+    
+    def evaluate_query(
+        self,
+        query_id: str,
+        bengali_query: str,
+        ground_truth_sql: str,
+        expected_result: List[Dict[str, Any]],
+        generated_sql: Optional[str] = None,
+        actual_result: Optional[List[Dict[str, Any]]] = None,
+        execution_error: Optional[str] = None,
+        generation_time_ms: float = 0.0,
+        execution_time_ms: float = 0.0,
+        generation_attempts: int = 1,
+        difficulty: str = "medium",
+        domain: str = "unknown",
+        language: str = "bengali_standard",
+        dialect: str = "standard",
+        confidence_score: float = 0.0
+    ) -> QueryMetrics:
+        """Evaluate a single query"""
+        
+        metrics = QueryMetrics(
+            query_id=query_id,
+            difficulty=difficulty,
+            domain=domain,
+            language=language,
+            dialect=dialect,
+            bengali_query=bengali_query,
+            ground_truth_sql=ground_truth_sql,
+            expected_result=expected_result,
+            generated_sql=generated_sql,
+            generation_time_ms=generation_time_ms,
+            generation_attempts=generation_attempts,
+            execution_time_ms=execution_time_ms,
+            execution_error=execution_error,
+            confidence_score=confidence_score,
+            actual_result=actual_result,
+            expected_rows=len(expected_result),
+            actual_rows=len(actual_result) if actual_result else 0
+        )
+        
+        # SQL comparison
+        if generated_sql:
+            metrics.generation_success = True
+            exact, normalized = MetricsCalculator.compare_sql(generated_sql, ground_truth_sql)
+            metrics.sql_exact_match = exact
+            metrics.sql_normalized_match = normalized
+        
+        # Result comparison
+        if actual_result is not None and generated_sql:
+            metrics.execution_success = True
+            exact, partial, matched, exp_rows, act_rows = MetricsCalculator.compare_results(
+                actual_result, expected_result
+            )
+            metrics.result_match = exact
+            metrics.result_partial_match = partial
+            metrics.matched_rows = matched
+        
+        # Error classification
+        if not metrics.execution_success and execution_error:
+            primary, secondary = ErrorClassifier.classify_execution_error(execution_error, generated_sql)
+            metrics.primary_error = primary
+            metrics.secondary_errors = secondary
+            metrics.error_message = execution_error
+        elif not metrics.result_match and metrics.execution_success:
+            primary = ErrorClassifier.classify_result_error(
+                generated_sql, ground_truth_sql,
+                expected_result, actual_result,
+                metrics.matched_rows
+            )
+            metrics.primary_error = primary
+        elif not generated_sql:
+            metrics.primary_error = ErrorCategory.NO_SQL_GENERATED
+        else:
+            metrics.primary_error = ErrorCategory.NONE
+        
+        self.query_metrics.append(metrics)
+        
+        logger.debug(f"Evaluated query {query_id}: {metrics.result_match}")
+        
+        return metrics
+    
+    def compute_aggregate_metrics(self) -> AggregateMetrics:
+        """Compute aggregated metrics"""
+        logger.info(f"Computing aggregate metrics for {len(self.query_metrics)} queries")
+        
+        self.aggregate_metrics = MetricsAggregator.aggregate(self.query_metrics)
+        
+        logger.info(f"Aggregate accuracy: {self.aggregate_metrics.result_accuracy:.1%}")
+        
+        return self.aggregate_metrics
+    
+    def save_results(self, filename: Optional[str] = None) -> str:
+        """Save evaluation results to JSON"""
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"evaluation_{self.model_name}_{timestamp}.json"
+        
+        filepath = self.output_dir / filename
+        
+        results = {
+            'metadata': {
+                'model_name': self.model_name,
+                'model_version': self.model_version,
+                'team_name': self.team_name,
+                'evaluation_timestamp': datetime.now().isoformat(),
+                'total_queries': len(self.query_metrics)
+            },
+            'aggregate_metrics': self.aggregate_metrics.to_dict() if self.aggregate_metrics else {},
+            'query_metrics': [m.to_dict() for m in self.query_metrics]
+        }
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"✓ Saved results to {filepath}")
+        
+        return str(filepath)
+    
+    def save_failure_analysis(self, filename: Optional[str] = None) -> str:
+        """Save failure analysis"""
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"failure_analysis_{self.model_name}_{timestamp}.json"
+        
+        filepath = self.output_dir / filename
+        
+        failures = [m for m in self.query_metrics if not m.result_match]
+        
+        analysis = {
+            'summary': {
+                'total_queries': len(self.query_metrics),
+                'correct': len(self.query_metrics) - len(failures),
+                'failed': len(failures)
+            },
+            'detailed_failures': [m.to_dict() for m in failures],
+            'failures_by_error_type': {}
+        }
+        
+        for failure in failures:
+            if failure.primary_error:
+                error_type = failure.primary_error.value
+                if error_type not in analysis['failures_by_error_type']:
+                    analysis['failures_by_error_type'][error_type] = []
+                analysis['failures_by_error_type'][error_type].append(failure.query_id)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(analysis, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"✓ Saved failure analysis to {filepath}")
+        
+        return str(filepath)
+    
+    def save_csv_report(self, filename: Optional[str] = None) -> str:
+        """Save results to CSV"""
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"results_{self.model_name}_{timestamp}.csv"
+        
+        filepath = self.output_dir / filename
+        
+        fieldnames = [
+            'query_id', 'bengali_query', 'difficulty', 'domain',
+            'generation_success', 'execution_success', 'result_match',
+            'sql_exact_match', 'execution_time_ms', 'confidence_score',
+            'primary_error'
+        ]
+        
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for metric in self.query_metrics:
+                writer.writerow({
+                    'query_id': metric.query_id,
+                    'bengali_query': metric.bengali_query[:50],
+                    'difficulty': metric.difficulty,
+                    'domain': metric.domain,
+                    'generation_success': metric.generation_success,
+                    'execution_success': metric.execution_success,
+                    'result_match': metric.result_match,
+                    'sql_exact_match': metric.sql_exact_match,
+                    'execution_time_ms': f"{metric.execution_time_ms:.2f}",
+                    'confidence_score': f"{metric.confidence_score:.2f}",
+                    'primary_error': metric.primary_error.value if metric.primary_error else ""
+                })
+        
+        logger.info(f"✓ Saved CSV report to {filepath}")
+        
+        return str(filepath)
+    
+    def generate_leaderboard_entry(self) -> LeaderboardEntry:
+        """Generate leaderboard entry"""
+        if not self.aggregate_metrics:
+            self.compute_aggregate_metrics()
+        
+        entry = LeaderboardEntry(
+            model_name=self.model_name,
+            model_version=self.model_version,
+            team_name=self.team_name,
+            evaluation_date=datetime.now().isoformat(),
+            total_queries=self.aggregate_metrics.total_queries,
+            correct_queries=self.aggregate_metrics.correct_queries,
+            accuracy=self.aggregate_metrics.result_accuracy,
+            exact_match_accuracy=self.aggregate_metrics.exact_match_accuracy,
+            normalized_match_accuracy=self.aggregate_metrics.normalized_match_accuracy,
+            execution_accuracy=self.aggregate_metrics.execution_accuracy,
+            result_accuracy=self.aggregate_metrics.result_accuracy,
+            avg_generation_time_ms=self.aggregate_metrics.avg_generation_time_ms,
+            avg_execution_time_ms=self.aggregate_metrics.avg_execution_time_ms,
+            avg_confidence=self.aggregate_metrics.avg_confidence_score
+        )
+        
+        return entry
+
+
+class LeaderboardManager:
+    """Manages leaderboard"""
+    
+    def __init__(self, filepath: str = "evaluation_results/leaderboard.json"):
+        """Initialize leaderboard manager"""
+        self.filepath = Path(filepath)
+        self.entries: List[LeaderboardEntry] = []
+        self._load()
+    
+    def _load(self) -> None:
+        """Load leaderboard from file"""
+        if self.filepath.exists():
+            try:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                for entry_dict in data.get('entries', []):
+                    entry = LeaderboardEntry(**entry_dict)
+                    self.entries.append(entry)
+                
+                logger.debug(f"Loaded {len(self.entries)} leaderboard entries")
+            
+            except Exception as e:
+                logger.warning(f"Failed to load leaderboard: {e}")
+    
+    def add_entry(self, entry: LeaderboardEntry) -> None:
+        """Add entry to leaderboard"""
+        self.entries.append(entry)
+        self._update_ranks()
+        self._save()
+        
+        logger.info(f"Added entry: {entry.model_name} (rank {entry.rank})")
+    
+    def _update_ranks(self) -> None:
+        """Update ranks based on accuracy"""
+        sorted_entries = sorted(
+            self.entries,
+            key=lambda x: (x.accuracy, x.avg_confidence),
+            reverse=True
+        )
+        
+        for rank, entry in enumerate(sorted_entries, 1):
+            entry.rank = rank
+    
+    def _save(self) -> None:
+        """Save leaderboard to file"""
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        data = {
+            'last_updated': datetime.now().isoformat(),
+            'total_models': len(self.entries),
+            'entries': [e.to_dict() for e in self.entries]
+        }
+        
+        with open(self.filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        logger.debug(f"Saved leaderboard to {self.filepath}")
+    
+    def get_leaderboard(self, limit: int = 10) -> List[LeaderboardEntry]:
+        """Get top entries"""
+        sorted_entries = sorted(
+            self.entries,
+            key=lambda x: (x.accuracy, x.avg_confidence),
+            reverse=True
+        )
+        
+        return sorted_entries[:limit]
+    
+    def get_model_rank(self, model_name: str) -> Optional[int]:
+        """Get rank of a model"""
+        for entry in self.entries:
+            if entry.model_name == model_name:
+                return entry.rank
+        
+        return None
+    
+    def to_markdown(self) -> str:
+        """Convert to markdown table"""
+        entries = self.get_leaderboard()
+        
+        if not entries:
+            return "No leaderboard entries"
+        
+        lines = [
+            "# B-DAAB Leaderboard",
+            f"_Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_",
+            "",
+            "| Rank | Model | Version | Team | Accuracy | Execution | Result | Generation Time |",
+            "|------|-------|---------|------|----------|-----------|--------|-----------------|"
+        ]
+        
+        for entry in entries:
+            line = (
+                f"| {entry.rank} | {entry.model_name} | {entry.model_version} | "
+                f"{entry.team_name} | {entry.accuracy:.1%} | {entry.execution_accuracy:.1%} | "
+                f"{entry.result_accuracy:.1%} | {entry.avg_generation_time_ms:.1f}ms |"
+            )
+            lines.append(line)
+        
+        return "\n".join(lines)
