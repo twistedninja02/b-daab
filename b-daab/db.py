@@ -1,0 +1,233 @@
+"""
+B-DAAB Database Module
+Handles DuckDB initialization, schema loading, and data management
+"""
+
+import duckdb
+import logging
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+from datetime import datetime
+import json
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DatabaseConfig:
+    db_path: str = ":memory:"
+    schema_file: str = "data/schemas.sql"
+    sample_data_file: str = "data/sample_data.sql"
+    auto_init: bool = True
+    verbose: bool = False
+
+
+class DatabaseInitializationError(Exception):
+    pass
+
+
+class DatabaseExecutionError(Exception):
+    pass
+
+
+class DatabaseLoader:
+    def __init__(self, config: Optional[DatabaseConfig] = None):
+        self.config = config or DatabaseConfig()
+        self.connection: Optional[duckdb.DuckDBPyConnection] = None
+        self.initialized = False
+        self._setup_logging()
+
+    def _setup_logging(self) -> None:
+        if self.config.verbose:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+
+    def initialize(self) -> None:
+        try:
+            logger.info(f"Initializing database: {self.config.db_path}")
+            self._connect()
+            self._load_schema()
+            self._load_sample_data()
+            self._validate_database()
+            self.initialized = True
+            logger.info("✓ Database initialization successful")
+        except Exception as e:
+            logger.error(f"✗ Database initialization failed: {e}", exc_info=True)
+            self.close()
+            raise DatabaseInitializationError(f"Failed to initialize database: {e}")
+
+    def _connect(self) -> None:
+        try:
+            if self.config.db_path == ":memory:":
+                logger.debug("Connecting to in-memory DuckDB")
+                self.connection = duckdb.connect(":memory:")
+            else:
+                db_path = Path(self.config.db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Connecting to DuckDB file: {db_path}")
+                self.connection = duckdb.connect(str(db_path))
+            logger.debug("✓ Connected to DuckDB")
+        except Exception as e:
+            raise DatabaseInitializationError(f"Failed to connect to DuckDB: {e}")
+
+    def _load_schema(self) -> None:
+        if not Path(self.config.schema_file).exists():
+            raise DatabaseInitializationError(
+                f"Schema file not found: {self.config.schema_file}"
+            )
+        try:
+            logger.info(f"Loading schema from {self.config.schema_file}")
+            with open(self.config.schema_file, 'r', encoding='utf-8') as f:
+                schema_sql = f.read()
+            statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
+            for i, stmt in enumerate(statements, 1):
+                if not stmt.startswith('--'):
+                    logger.debug(f"Executing schema statement {i}/{len(statements)}")
+                    self.connection.execute(stmt)
+            logger.info(f"✓ Loaded {len(statements)} schema statements")
+        except Exception as e:
+            raise DatabaseInitializationError(f"Failed to load schema: {e}")
+
+    def _load_sample_data(self) -> None:
+        if not Path(self.config.sample_data_file).exists():
+            logger.warning(f"Sample data file not found: {self.config.sample_data_file}")
+            return
+        try:
+            logger.info(f"Loading sample data from {self.config.sample_data_file}")
+            with open(self.config.sample_data_file, 'r', encoding='utf-8') as f:
+                data_sql = f.read()
+            statements = [s.strip() for s in data_sql.split(';') if s.strip()]
+            insert_count = 0
+            for i, stmt in enumerate(statements, 1):
+                if not stmt.startswith('--'):
+                    logger.debug(f"Executing data statement {i}/{len(statements)}")
+                    self.connection.execute(stmt)
+                    if stmt.strip().upper().startswith('INSERT'):
+                        insert_count += 1
+            logger.info(f"✓ Loaded sample data ({insert_count} INSERT statements)")
+        except Exception as e:
+            raise DatabaseInitializationError(f"Failed to load sample data: {e}")
+
+    def _validate_database(self) -> None:
+        try:
+            logger.info("Validating database integrity")
+            tables_result = self.connection.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' ORDER BY table_name"
+            ).fetchall()
+            tables = [row[0] for row in tables_result]
+            logger.debug(f"Found {len(tables)} tables: {', '.join(tables)}")
+            for table in tables:
+                count = self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                logger.debug(f"  {table}: {count} rows")
+            logger.info("✓ Database validation successful")
+        except Exception as e:
+            raise DatabaseInitializationError(f"Database validation failed: {e}")
+
+    def execute_query(self, query: str, fetch_all: bool = True) -> List[tuple]:
+        if not self.initialized or self.connection is None:
+            raise DatabaseExecutionError("Database not initialized")
+        try:
+            logger.debug(f"Executing query: {query[:100]}...")
+            result = self.connection.execute(query)
+            rows = result.fetchall() if fetch_all else [result.fetchone()]
+            logger.debug(f"✓ Query executed, returned {len(rows)} rows")
+            return rows
+        except Exception as e:
+            logger.error(f"✗ Query execution failed: {e}")
+            raise DatabaseExecutionError(f"Query execution failed: {e}")
+
+    def execute_query_dict(self, query: str, fetch_all: bool = True) -> List[Dict[str, Any]]:
+        if not self.initialized or self.connection is None:
+            raise DatabaseExecutionError("Database not initialized")
+        try:
+            logger.debug(f"Executing query (dict mode): {query[:100]}...")
+            result = self.connection.execute(query)
+            column_names = [desc[0] for desc in result.description]
+            rows = result.fetchall() if fetch_all else [result.fetchone()]
+            results = [dict(zip(column_names, row)) for row in rows if row]
+            logger.debug(f"✓ Query executed, returned {len(results)} rows")
+            return results
+        except Exception as e:
+            logger.error(f"✗ Query execution (dict mode) failed: {e}")
+            raise DatabaseExecutionError(f"Query execution failed: {e}")
+
+    def get_table_info(self, table_name: str) -> Dict[str, Any]:
+        try:
+            logger.debug(f"Getting info for table: {table_name}")
+            columns_result = self.connection.execute(
+                f"PRAGMA table_info({table_name})"
+            ).fetchall()
+            if not columns_result:
+                raise DatabaseExecutionError(f"Table not found: {table_name}")
+            count_result = self.connection.execute(
+                f"SELECT COUNT(*) FROM {table_name}"
+            ).fetchone()[0]
+            columns = [
+                {'name': col[1], 'type': col[2], 'notnull': bool(col[3]), 'default': col[4]}
+                for col in columns_result
+            ]
+            return {
+                'table_name': table_name,
+                'row_count': count_result,
+                'columns': columns,
+                'column_count': len(columns)
+            }
+        except Exception as e:
+            logger.error(f"✗ Failed to get table info for {table_name}: {e}")
+            raise DatabaseExecutionError(f"Failed to get table info: {e}")
+
+    def get_all_tables(self) -> List[str]:
+        try:
+            logger.debug("Retrieving all tables")
+            result = self.connection.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' ORDER BY table_name"
+            ).fetchall()
+            tables = [row[0] for row in result]
+            logger.debug(f"✓ Found {len(tables)} tables")
+            return tables
+        except Exception as e:
+            logger.error(f"✗ Failed to get tables: {e}")
+            raise DatabaseExecutionError(f"Failed to get tables: {e}")
+
+    def close(self) -> None:
+        if self.connection:
+            try:
+                self.connection.close()
+                logger.info("✓ Database connection closed")
+            except Exception as e:
+                logger.warning(f"Error closing database: {e}")
+            finally:
+                self.connection = None
+                self.initialized = False
+
+    def __enter__(self):
+        self.initialize()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __repr__(self) -> str:
+        status = "initialized" if self.initialized else "not initialized"
+        return f"DatabaseLoader({self.config.db_path}, {status})"
+
+
+def create_database(
+    db_path: str = ":memory:",
+    schema_file: str = "data/schemas.sql",
+    sample_data_file: str = "data/sample_data.sql",
+    verbose: bool = False
+) -> DatabaseLoader:
+    config = DatabaseConfig(
+        db_path=db_path,
+        schema_file=schema_file,
+        sample_data_file=sample_data_file,
+        verbose=verbose
+    )
+    db = DatabaseLoader(config)
+    db.initialize()
+    return db
