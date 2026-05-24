@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "08WuLNXeupNC36BhmUDWP"
+uri = "file://b-daab.tar.gz"
+type = "unspecified"
+title = "b-daab project (tar.gz)"
