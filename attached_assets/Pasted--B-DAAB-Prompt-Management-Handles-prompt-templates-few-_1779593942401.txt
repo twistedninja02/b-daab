@@ -1,0 +1,273 @@
+"""
+B-DAAB Prompt Management
+Handles prompt templates, few-shot examples, and dynamic prompt generation
+"""
+
+import logging
+from enum import Enum
+from typing import List, Dict, Optional, Any
+from dataclasses import dataclass, field
+import json
+
+logger = logging.getLogger(__name__)
+
+
+class PromptTemplate(Enum):
+    """Available prompt templates"""
+    BASIC = "basic"
+    DETAILED = "detailed"
+    CHAIN_OF_THOUGHT = "chain_of_thought"
+    FEW_SHOT = "few_shot"
+
+
+@dataclass
+class FewShotExample:
+    """A few-shot learning example"""
+    id: str
+    bengali_query: str
+    english_gloss: str
+    sql: str
+    explanation: Optional[str] = None
+    domain: Optional[str] = None
+
+
+class PromptBuilder:
+    """Builds prompts for SQL generation"""
+    
+    BASIC_TEMPLATE = """You are a SQL expert specializing in Bengali language understanding.
+Convert the following Bengali query to SQL.
+
+Bengali Query: {bengali_query}
+English Translation: {english_gloss}
+
+Database Schema:
+{schema_info}
+
+Generate the SQL query:"""
+
+    DETAILED_TEMPLATE = """You are an expert SQL generator with deep knowledge of Bengali language and semantics.
+
+Your task: Convert a Bengali natural language query to an accurate SQL statement.
+
+Bengali Query: {bengali_query}
+English Translation: {english_gloss}
+
+Database Schema:
+{schema_info}
+
+Instructions:
+1. Understand the Bengali query semantics carefully
+2. Identify the main entities (tables) and attributes (columns) involved
+3. Determine the appropriate SQL operations (SELECT, WHERE, JOIN, GROUP BY, etc.)
+4. Generate syntactically correct SQL
+
+SQL Query:"""
+
+    CHAIN_OF_THOUGHT_TEMPLATE = """You are a SQL expert. Convert Bengali queries to SQL using step-by-step reasoning.
+
+Bengali Query: {bengali_query}
+English Translation: {english_gloss}
+
+Database Schema:
+{schema_info}
+
+Let's think through this step by step:
+1. What entities are being asked about?
+2. What attributes do we need?
+3. What conditions apply?
+4. What operations are needed?
+
+Now generate the SQL query:"""
+
+    FEW_SHOT_TEMPLATE = """You are a SQL expert. Learn from these examples and generate SQL for new queries.
+
+Examples:
+{examples}
+
+Now, convert this Bengali query to SQL:
+
+Bengali Query: {bengali_query}
+English Translation: {english_gloss}
+
+Database Schema:
+{schema_info}
+
+SQL Query:"""
+    
+    def __init__(self, template: PromptTemplate = PromptTemplate.BASIC):
+        """Initialize prompt builder"""
+        self.template = template
+        self.logger = logger
+    
+    def build_full_prompt(
+        self,
+        bengali_query: str,
+        english_gloss: str,
+        schema_info: str,
+        examples: Optional[List[FewShotExample]] = None
+    ) -> tuple[str, str]:
+        """Build system and user prompts"""
+        system_prompt = "You are a helpful assistant that converts Bengali natural language queries to SQL."
+        
+        if self.template == PromptTemplate.BASIC:
+            user_prompt = self.BASIC_TEMPLATE.format(
+                bengali_query=bengali_query,
+                english_gloss=english_gloss,
+                schema_info=schema_info
+            )
+        
+        elif self.template == PromptTemplate.DETAILED:
+            user_prompt = self.DETAILED_TEMPLATE.format(
+                bengali_query=bengali_query,
+                english_gloss=english_gloss,
+                schema_info=schema_info
+            )
+        
+        elif self.template == PromptTemplate.CHAIN_OF_THOUGHT:
+            user_prompt = self.CHAIN_OF_THOUGHT_TEMPLATE.format(
+                bengali_query=bengali_query,
+                english_gloss=english_gloss,
+                schema_info=schema_info
+            )
+        
+        elif self.template == PromptTemplate.FEW_SHOT:
+            examples_text = self._format_examples(examples or [])
+            user_prompt = self.FEW_SHOT_TEMPLATE.format(
+                examples=examples_text,
+                bengali_query=bengali_query,
+                english_gloss=english_gloss,
+                schema_info=schema_info
+            )
+        
+        else:
+            user_prompt = self.BASIC_TEMPLATE.format(
+                bengali_query=bengali_query,
+                english_gloss=english_gloss,
+                schema_info=schema_info
+            )
+        
+        return system_prompt, user_prompt
+    
+    def _format_examples(self, examples: List[FewShotExample]) -> str:
+        """Format few-shot examples"""
+        formatted = []
+        
+        for example in examples[:3]:
+            text = f"""Example {example.id}:
+Bengali: {example.bengali_query}
+English: {example.english_gloss}
+SQL: {example.sql}
+"""
+            if example.explanation:
+                text += f"Explanation: {example.explanation}\n"
+            
+            formatted.append(text)
+        
+        return "\n".join(formatted)
+
+
+class PromptLibrary:
+    """Manages prompt examples and templates"""
+    
+    def __init__(self):
+        """Initialize prompt library"""
+        self.examples: Dict[str, FewShotExample] = {}
+        self.logger = logger
+    
+    def add_example(self, example: FewShotExample) -> None:
+        """Add an example"""
+        self.examples[example.id] = example
+        self.logger.debug(f"Added example: {example.id}")
+    
+    def get_examples_by_domain(
+        self,
+        domain: str,
+        limit: int = 3
+    ) -> List[FewShotExample]:
+        """Get examples by domain"""
+        matched = [
+            ex for ex in self.examples.values()
+            if ex.domain and ex.domain.lower() == domain.lower()
+        ]
+        return matched[:limit]
+    
+    def get_random_examples(self, limit: int = 3) -> List[FewShotExample]:
+        """Get random examples"""
+        import random
+        examples = list(self.examples.values())
+        return random.sample(examples, min(limit, len(examples)))
+    
+    def load_from_dataset(self, dataset_path: str) -> None:
+        """Load examples from dataset JSON"""
+        try:
+            with open(dataset_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            tasks = data.get('tasks', [])
+            
+            for task in tasks[:10]:
+                example = FewShotExample(
+                    id=task.get('id', ''),
+                    bengali_query=task.get('query_bengali', ''),
+                    english_gloss=task.get('query_english_gloss', ''),
+                    sql=task.get('sql_ground_truth', ''),
+                    domain=task.get('domain'),
+                    explanation=task.get('explanation')
+                )
+                self.add_example(example)
+            
+            self.logger.info(f"Loaded {len(self.examples)} examples from dataset")
+        
+        except Exception as e:
+            self.logger.error(f"Failed to load examples: {e}")
+    
+    def load_from_dict(self, data: Dict[str, Any]) -> None:
+        """Load examples from dictionary"""
+        examples = data.get('examples', [])
+        
+        for ex in examples:
+            example = FewShotExample(
+                id=ex.get('id', ''),
+                bengali_query=ex.get('bengali_query', ''),
+                english_gloss=ex.get('english_gloss', ''),
+                sql=ex.get('sql', ''),
+                domain=ex.get('domain'),
+                explanation=ex.get('explanation')
+            )
+            self.add_example(example)
+        
+        self.logger.info(f"Loaded {len(self.examples)} examples from dict")
+
+
+def create_default_library() -> PromptLibrary:
+    """Create a default prompt library with built-in examples"""
+    library = PromptLibrary()
+    
+    default_examples = [
+        FewShotExample(
+            id="ex001",
+            bengali_query="সকল হাসপাতালের তালিকা দেখান",
+            english_gloss="Show all hospitals",
+            sql="SELECT * FROM hospitals;",
+            domain="healthcare"
+        ),
+        FewShotExample(
+            id="ex002",
+            bengali_query="ঢাকায় কতটি হাসপাতাল আছে",
+            english_gloss="How many hospitals are in Dhaka",
+            sql="SELECT COUNT(*) FROM hospitals WHERE city = 'ঢাকা';",
+            domain="healthcare"
+        ),
+        FewShotExample(
+            id="ex003",
+            bengali_query="সকল স্কুলের নাম এবং শহর দেখান",
+            english_gloss="Show school names and cities",
+            sql="SELECT name, city FROM schools;",
+            domain="education"
+        ),
+    ]
+    
+    for example in default_examples:
+        library.add_example(example)
+    
+    return library
