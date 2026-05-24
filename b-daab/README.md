@@ -71,6 +71,17 @@ b-daab/
     └── tasks.json        # Benchmark task dataset
 ```
 
+## Publishing to GitHub
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git remote add origin https://github.com/twistedninja02/b-daab.git
+git branch -M main
+git push -u origin main
+```
+
 ## Adding Data
 
 Place your DuckDB schema in `data/schemas.sql` and seed data in `data/sample_data.sql`. The database is initialized in-memory by default; pass `--db-path mydb.duckdb` to persist it.
