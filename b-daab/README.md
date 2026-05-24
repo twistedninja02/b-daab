@@ -82,7 +82,9 @@ b-daab/
 │   ├── metrics.py        # Evaluation metrics and error classification
 │   └── runner.py         # Evaluation pipeline and leaderboard
 └── data/
-    └── tasks.json        # Benchmark task dataset
+    ├── tasks.json         # Benchmark task dataset
+    ├── schemas.sql        # DuckDB table definitions
+    └── sample_data.sql    # Seed data matching tasks.json expected results
 ```
 
 ## Publishing to GitHub
@@ -101,4 +103,4 @@ git push -u origin main
 
 ## Adding Data
 
-Place your DuckDB schema in `data/schemas.sql` and seed data in `data/sample_data.sql`. The database is initialized in-memory by default; pass `--db-path mydb.duckdb` to persist it.
+Edit `data/schemas.sql` to add new tables and `data/sample_data.sql` to add rows. The database is initialized in-memory by default; pass `--db-path mydb.duckdb` to persist it to disk.

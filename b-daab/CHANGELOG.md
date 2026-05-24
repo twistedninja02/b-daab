@@ -19,6 +19,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `eval/metrics.py` — Query and aggregate metrics, SQL normalization, result comparison, error classification
 - `eval/runner.py` — Full evaluation pipeline with JSON, CSV, and leaderboard output
 - `data/tasks.json` — Initial benchmark dataset with 5 Bengali NL-to-SQL tasks across healthcare and education domains
+- `data/schemas.sql` — DuckDB schema for hospitals, patients, schools, students, shops, and products tables
+- `data/sample_data.sql` — Sample data aligned with `tasks.json` expected results (10 patients, 5 hospitals, 5 schools, 3 shops, 5 products)
 - `tests/` — 35 unit tests covering SQL normalization, query safety, metrics calculation, and aggregation
 - `pyproject.toml` — Package configuration with runtime and dev dependency groups
 - `.github/workflows/ci.yml` — CI pipeline (lint, type check, format check, tests) on every push and PR
