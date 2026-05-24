@@ -22,7 +22,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install ".[dev]"
 
       - name: Run flake8 (lint)
         run: flake8 . --max-line-length=120 --exclude=__pycache__,.git
@@ -44,8 +44,8 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install black
-        run: pip install black==23.12.0
+      - name: Install dev dependencies
+        run: pip install ".[dev]"
 
       - name: Check formatting with black
         run: black --check --line-length 120 .
@@ -65,8 +65,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install ".[dev]"
 
       - name: Run pytest
         run: pytest tests/ -v --tb=short
-        continue-on-error: true

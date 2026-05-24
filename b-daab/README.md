@@ -4,6 +4,20 @@ Bengali Database as a Benchmark — a framework for evaluating Bengali Natural L
 
 ## Installation
 
+**As a package (recommended):**
+
+```bash
+pip install .
+```
+
+**With dev tools (lint, tests, formatting):**
+
+```bash
+pip install ".[dev]"
+```
+
+**Or directly from requirements:**
+
 ```bash
 pip install -r requirements.txt
 ```
