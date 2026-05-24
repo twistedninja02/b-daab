@@ -1,0 +1,244 @@
+"""
+B-DAAB Query Executor
+Executes SQL queries safely with error handling and result validation
+"""
+
+import re
+import logging
+from typing import Optional, List, Dict, Any, Tuple
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from enum import Enum
+import time
+
+from db import DatabaseLoader, DatabaseExecutionError
+
+logger = logging.getLogger(__name__)
+
+
+class QueryType(Enum):
+    """Classification of query types"""
+    SELECT = "SELECT"
+    INSERT = "INSERT"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
+    CREATE = "CREATE"
+    DROP = "DROP"
+    ALTER = "ALTER"
+    UNKNOWN = "UNKNOWN"
+
+
+class QuerySafetyError(Exception):
+    """Raised when query fails safety checks"""
+    pass
+
+
+@dataclass
+class QueryExecutionMetrics:
+    """Metrics collected during query execution"""
+    execution_time_ms: float = 0.0
+    result_rows: int = 0
+    result_size_bytes: int = 0
+    query_type: str = ""
+    table_accessed: Optional[str] = None
+    has_join: bool = False
+    has_subquery: bool = False
+    has_aggregation: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+
+@dataclass
+class QueryResult:
+    """Result of executing a query"""
+    success: bool
+    query: str
+    query_type: str
+    
+    rows: Optional[List[Tuple[Any, ...]]] = None
+    rows_dict: Optional[List[Dict[str, Any]]] = None
+    column_names: Optional[List[str]] = None
+    row_count: int = 0
+    
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+    error_code: Optional[str] = None
+    
+    executed_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    execution_time_ms: float = 0.0
+    metrics: QueryExecutionMetrics = field(default_factory=QueryExecutionMetrics)
+    
+    warnings: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        result = asdict(self)
+        result['metrics'] = self.metrics.to_dict()
+        return result
+    
+    def __str__(self) -> str:
+        """String representation"""
+        if self.success:
+            return (
+                f"QueryResult(success=True, rows={self.row_count}, "
+                f"time={self.execution_time_ms:.2f}ms)"
+            )
+        else:
+            return (
+                f"QueryResult(success=False, error={self.error_type}: {self.error})"
+            )
+
+
+class QuerySanitizer:
+    """Sanitizes and validates SQL queries"""
+    
+    DANGEROUS_KEYWORDS = {
+        'DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE', 
+        'EXEC', 'EXECUTE', 'SCRIPT', 'JAVASCRIPT'
+    }
+    
+    ALLOWED_KEYWORDS = {'SELECT', 'WITH', 'PRAGMA', 'EXPLAIN'}
+    
+    @staticmethod
+    def detect_query_type(query: str) -> QueryType:
+        """Detect the type of SQL query"""
+        query = QuerySanitizer._remove_comments(query).strip()
+        match = re.match(r'^\s*(\w+)', query, re.IGNORECASE)
+        if not match:
+            return QueryType.UNKNOWN
+        
+        keyword = match.group(1).upper()
+        
+        if keyword == 'SELECT':
+            return QueryType.SELECT
+        elif keyword == 'INSERT':
+            return QueryType.INSERT
+        elif keyword == 'UPDATE':
+            return QueryType.UPDATE
+        elif keyword == 'DELETE':
+            return QueryType.DELETE
+        elif keyword == 'CREATE':
+            return QueryType.CREATE
+        elif keyword == 'DROP':
+            return QueryType.DROP
+        elif keyword == 'ALTER':
+            return QueryType.ALTER
+        else:
+            return QueryType.UNKNOWN
+    
+    @staticmethod
+    def is_read_only(query: str) -> bool:
+        """Check if query is read-only"""
+        query_type = QuerySanitizer.detect_query_type(query)
+        return query_type in {QueryType.SELECT, QueryType.UNKNOWN}
+    
+    @staticmethod
+    def sanitize(query: str) -> str:
+        """Sanitize SQL query"""
+        query = QuerySanitizer._remove_comments(query)
+        query = re.sub(r'\s+', ' ', query)
+        query = query.replace('\n', ' ').replace('\r', ' ')
+        return query.strip()
+    
+    @staticmethod
+    def _remove_comments(query: str) -> str:
+        """Remove SQL comments"""
+        query = re.sub(r'--.*?(\n|$)', '\n', query)
+        query = re.sub(r'/\*.*?\*/', '', query, flags=re.DOTALL)
+        return query
+    
+    @staticmethod
+    def validate_safe_query(query: str) -> Tuple[bool, Optional[str]]:
+        """Validate that a query is safe"""
+        query_type = QuerySanitizer.detect_query_type(query)
+        
+        if not QuerySanitizer.is_read_only(query):
+            return False, f"Only SELECT queries are allowed. Got: {query_type.value}"
+        
+        upper_query = query.upper()
+        for keyword in QuerySanitizer.DANGEROUS_KEYWORDS:
+            if re.search(rf'\b{keyword}\b', upper_query):
+                return False, f"Dangerous keyword found: {keyword}"
+        
+        return True, None
+
+
+class QueryExecutor:
+    """Executes SQL queries safely"""
+    
+    def __init__(self, db: DatabaseLoader, verbose: bool = False):
+        """Initialize query executor"""
+        self.db = db
+        self.verbose = verbose
+        self.execution_history: List[QueryResult] = []
+        self.execution_count = 0
+        
+        if verbose:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+    
+    def execute(
+        self,
+        query: str,
+        safety_check: bool = True,
+        return_dict: bool = False,
+        timeout: Optional[float] = None
+    ) -> QueryResult:
+        """Execute a SQL query safely"""
+        self.execution_count += 1
+        start_time = time.time()
+        
+        logger.info(f"[Query #{self.execution_count}] Executing: {query[:80]}...")
+        
+        result = QueryResult(
+            success=False,
+            query=query,
+            query_type="UNKNOWN"
+        )
+        
+        try:
+            sanitized_query = QuerySanitizer.sanitize(query)
+            result.query = sanitized_query
+            
+            query_type = QuerySanitizer.detect_query_type(sanitized_query)
+            result.query_type = query_type.value
+            result.metrics.query_type = query_type.value
+            
+            if safety_check:
+                is_safe, error_msg = QuerySanitizer.validate_safe_query(sanitized_query)
+                if not is_safe:
+                    logger.warning(f"Query failed safety check: {error_msg}")
+                    raise QuerySafetyError(error_msg)
+            
+            if return_dict:
+                rows_dict = self.db.execute_query_dict(sanitized_query)
+                result.rows_dict = rows_dict
+                result.rows = [tuple(d.values()) for d in rows_dict]
+                if rows_dict:
+                    result.column_names = list(rows_dict[0].keys())
+            else:
+                rows = self.db.execute_query(sanitized_query)
+                result.rows = rows
+                
+                try:
+                    db_result = self.db.connection.execute(sanitized_query)
+                    result.column_names = [desc[0] for desc in db_result.description]
+                except:
+                    result.column_names = None
+            
+            result.row_count = len(result.rows) if result.rows else 0
+            result.success = True
+            
+            self._calculate_metrics(result, sanitized_query)
+            
+            logger.info(
+                f"✓ Query #{self.execution_count} executed successfully "
+                f"({result.row_count} rows, {result.execution_time_ms:.2f}ms)"
+            )
+        
+        except QuerySafetyError as e:
+            result.error = str(e)
+            result.error
